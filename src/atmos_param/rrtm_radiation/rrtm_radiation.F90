@@ -57,6 +57,10 @@
         real(kind=rb),allocatable,dimension(:,:)   :: zeros                ! place holder for any species set
                                                                            !  to zero
         real(kind=rb),allocatable,dimension(:,:)   :: ones                 ! place holder for secondary species
+        real(kind=rb),allocatable,dimension(:,:,:) :: zeros3d              ! 3D placeholder for mcica SW cloud fields
+        real(kind=rb),allocatable,dimension(:,:,:) :: ones3d               ! 3D placeholder for mcica SW cloud fields
+        real(kind=rb),allocatable,dimension(:,:,:) :: zeros3d_lw           ! 3D placeholder for mcica LW cloud fields
+        real(kind=rb),allocatable,dimension(:,:,:) :: ones3d_lw            ! 3D placeholder for mcica LW cloud fields
         ! the following species are only set if use_secondary_gases=.true.
         real(kind=rb),allocatable,dimension(:,:)   :: ch4                  ! CH4 [vmr]
                                                                            ! dimension (ncols_rrt x nlay_rrt)
@@ -427,6 +431,14 @@
              co2   = co2ppmv*1.e-6 ! convert ppmv
              zeros = 0. ! gases and clouds
              ones  = 1. ! gases and clouds
+             allocate(zeros3d(nbndsw,ncols_rrt,nlay_rrt), &
+                  ones3d(nbndsw,ncols_rrt,nlay_rrt))
+             allocate(zeros3d_lw(nbndlw,ncols_rrt,nlay_rrt), &
+                  ones3d_lw(nbndlw,ncols_rrt,nlay_rrt))
+             zeros3d = 0.
+             ones3d  = 1.
+             zeros3d_lw = 0.
+             ones3d_lw  = 1.
 
              emis  = 1. !black body: 1.0
              
@@ -873,8 +885,8 @@
                   cosz_rr   , solrad   , dyofyr   , solr_cnst, &
                   inflglw   , iceflglw , liqflglw , &
                   ! cloud parameters
-                  zeros     , taucld   , sw_zro   , sw_zro   , sw_zro , &
-                  zeros     , zeros    , 10*ones  , 10*ones  , &
+                  zeros3d   , taucld   , sw_zro   , sw_zro   , sw_zro , &
+                  zeros3d   , zeros3d  , 10*ones  , 10*ones  , &
                   tauaer    , zro_sw   , zro_sw   , zro_sw    , &
                   ! output
                   swuflx    , swdflx   , swhr     , swuflxc  , swdflxc, swhrc)
@@ -887,8 +899,8 @@
                   cosz_rr   , solrad   , dyofyr   , solr_cnst, &
                   inflglw   , iceflglw , liqflglw , &
                   ! cloud parameters
-                  zeros     , taucld   , sw_zro   , sw_zro   , sw_zro , &
-                  zeros     , zeros    , 10*ones  , 10*ones  , &
+                  zeros3d   , taucld   , sw_zro   , sw_zro   , sw_zro , &
+                  zeros3d   , zeros3d  , 10*ones  , 10*ones  , &
                   tauaer    , zro_sw   , zro_sw   , zro_sw   , &
                   ! output
                   swuflx    , swdflx   , swhr     , swuflxc  , swdflxc, swhrc)
@@ -920,7 +932,7 @@
                   ! emissivity and cloud composition
                   emis           , inflglw        , iceflglw       , liqflglw      ,  &
                   ! cloud parameters
-                  zeros          , taucld         , zeros          , zeros         , 10*ones, 10*ones, &
+                  zeros3d_lw     , taucld         , zeros3d_lw     , zeros3d_lw    , 10*ones, 10*ones, &
                   tauaer         , &
                   ! output
                   uflx           , dflx           , hr             , uflxc         , dflxc  , hrc)
@@ -933,7 +945,7 @@
                   ! emissivity and cloud composition
                   emis      , inflglw , iceflglw, liqflglw, &
                   ! cloud parameters
-                  zeros     , taucld  , zeros   , zeros, 10*ones, 10*ones, &
+                  zeros3d_lw, taucld  , zeros3d_lw, zeros3d_lw, 10*ones, 10*ones, &
                   tauaer    , &
                   ! output
                   uflx      , dflx    , hr      , uflxc, dflxc  , hrc)
