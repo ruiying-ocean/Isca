@@ -95,6 +95,8 @@ character(len=10), parameter :: mod_name='atmosphere'
 !=================================================================================================================================
 
 public :: idealized_moist_phys_init , idealized_moist_phys , idealized_moist_phys_end
+! GENIE-X coupled ocean interface
+public :: set_coupled_sst, get_surface_fluxes, coupled_ocean
 
 logical :: module_is_initialized =.false.
 logical :: turb = .false.
@@ -130,6 +132,7 @@ logical :: do_damping = .false.
 
 
 logical :: mixed_layer_bc = .false.
+logical :: coupled_ocean = .false. ! GENIE-X: SST from external ocean model, skip mixed_layer
 logical :: gp_surface = .false. ! Use Schneider & Liu 2009's prescription of lower-boundary heat flux
 
 logical :: do_simple = .false. ! Have added this to enable relative humidity to be calculated correctly below.
@@ -161,7 +164,7 @@ namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roug
                                       roughness_moist, roughness_mom, do_virtual,    &
                                       land_option, land_file_name, land_field_name,  & ! options for idealised land
                                       land_roughness_prefactor,                      &
-                                      gp_surface, convection_scheme,                 &
+                                      gp_surface, coupled_ocean, convection_scheme,   &
                                       bucket, init_bucket_depth, init_bucket_depth_land, &
                                       max_bucket_depth_land, robert_bucket, raw_bucket, &
                                       do_socrates_radiation, do_lcl_diffusivity_depth
@@ -1305,7 +1308,7 @@ if(turb) then
 !
 ! update surface temperature
 !
-   if(mixed_layer_bc) then
+   if(mixed_layer_bc .and. .not. coupled_ocean) then
    call mixed_layer(                                                       &
                               Time, Time+Time_step,                        &
                               js,                                          & 
@@ -1465,6 +1468,66 @@ subroutine rh_calc(pfull,T,qv,RH) ! subroutine copied from 2006 FMS MoistModel f
 !        IF (present(MASK)) RH(:,:,:)=MASK(:,:,:)*RH(:,:,:)
 
 END SUBROUTINE rh_calc
+
+!=================================================================================================================================
+! GENIE-X coupled ocean interface routines
+!=================================================================================================================================
+
+!---------------------------------------------------------------------------
+! Set surface temperature from external ocean model (GENIE-X coupling)
+! Called before each atmosphere step when coupled_ocean = .true.
+! SST must be in Kelvin on the ISCA grid.
+!---------------------------------------------------------------------------
+subroutine set_coupled_sst(sst_in, nx, ny)
+    integer, intent(in) :: nx, ny
+    real, intent(in) :: sst_in(nx, ny)
+
+    t_surf(1:nx, 1:ny) = sst_in(1:nx, 1:ny)
+
+end subroutine set_coupled_sst
+
+!---------------------------------------------------------------------------
+! Get surface fluxes for export to external ocean model
+! Called after each atmosphere step when coupled_ocean = .true.
+! Returns flux arrays on the ISCA grid.
+!---------------------------------------------------------------------------
+subroutine get_surface_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
+        precip_out, net_sw_out, lw_down_out, t_surf_out, q_surf_out, &
+        land_frac_out, nx, ny)
+    integer, intent(in) :: nx, ny
+    real, intent(out) :: flux_t_out(nx, ny)    ! Sensible heat flux [W/m2]
+    real, intent(out) :: flux_q_out(nx, ny)    ! Moisture flux [kg/m2/s]
+    real, intent(out) :: flux_u_out(nx, ny)    ! Zonal stress [Pa]
+    real, intent(out) :: flux_v_out(nx, ny)    ! Meridional stress [Pa]
+    real, intent(out) :: precip_out(nx, ny)    ! Total precipitation [kg/m2/s]
+    real, intent(out) :: net_sw_out(nx, ny)    ! Net surface SW down [W/m2]
+    real, intent(out) :: lw_down_out(nx, ny)   ! Downwelling LW [W/m2]
+    real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
+    real, intent(out) :: q_surf_out(nx, ny)    ! Surface humidity [kg/kg]
+    real, intent(out) :: land_frac_out(nx, ny) ! Land fraction [0-1]
+
+    flux_t_out(1:nx, 1:ny)    = flux_t(1:nx, 1:ny)
+    flux_q_out(1:nx, 1:ny)    = flux_q(1:nx, 1:ny)
+    flux_u_out(1:nx, 1:ny)    = flux_u(1:nx, 1:ny)
+    flux_v_out(1:nx, 1:ny)    = flux_v(1:nx, 1:ny)
+    precip_out(1:nx, 1:ny)    = precip(1:nx, 1:ny)
+    net_sw_out(1:nx, 1:ny)    = net_surf_sw_down(1:nx, 1:ny)
+    lw_down_out(1:nx, 1:ny)   = surf_lw_down(1:nx, 1:ny)
+    t_surf_out(1:nx, 1:ny)    = t_surf(1:nx, 1:ny)
+    q_surf_out(1:nx, 1:ny)    = q_surf(1:nx, 1:ny)
+
+    ! Land fraction from the land mask
+    if (allocated(land)) then
+        where (land(1:nx, 1:ny))
+            land_frac_out(1:nx, 1:ny) = 1.0
+        elsewhere
+            land_frac_out(1:nx, 1:ny) = 0.0
+        end where
+    else
+        land_frac_out = 0.0  ! All ocean (aquaplanet)
+    end if
+
+end subroutine get_surface_fluxes
 
 !=================================================================================================================================
 
