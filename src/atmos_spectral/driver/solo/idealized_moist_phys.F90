@@ -273,7 +273,8 @@ real, allocatable, dimension(:,:,:) :: &
 real, allocatable, dimension(:,:) :: &
      net_surf_sw_down,  &   ! net sw flux at surface
      surf_sw_down,      &   ! downward sw flux at surface (RRTM only)
-     surf_lw_down           ! downward lw flux at surface
+     surf_lw_down,      &   ! downward lw flux at surface
+     surf_lw_net            ! net lw flux at surface, downward+ (RRTM only)
 
 integer ::           &
      id_diff_dt_ug,  &   ! zonal wind tendency from vertical diffusion
@@ -536,7 +537,9 @@ allocate(non_diff_dt_qg  (is:ie, js:je, num_levels))
 allocate(net_surf_sw_down        (is:ie, js:je))
 allocate(surf_sw_down            (is:ie, js:je))
 allocate(surf_lw_down            (is:ie, js:je))
+allocate(surf_lw_net             (is:ie, js:je))
 surf_sw_down = 0.0   ! filled by RRTM in coupled runs; safe default for non-RRTM paths
+surf_lw_net  = 0.0
 allocate(conv_dt_tg  (is:ie, js:je, num_levels))
 allocate(conv_dt_qg  (is:ie, js:je, num_levels))
 allocate(cond_dt_tg  (is:ie, js:je, num_levels))
@@ -1184,7 +1187,8 @@ if(do_rrtm_radiation) then
    call run_rrtmg(is,js,Time,rad_lat(:,:),rad_lon(:,:),p_full(:,:,:,current),p_half(:,:,:,current),  &
                   albedo,grid_tracers(:,:,:,previous,nsphum),tg_interp,t_surf(:,:),dt_tg(:,:,:),     &
                   coszen,net_surf_sw_down(:,:),surf_lw_down(:,:),                                   &
-                  flux_sw_down=surf_sw_down(:,:))!, cf_rad(:,:,:), reff_rad(:,:,:),   &
+                  flux_sw_down=surf_sw_down(:,:),                                                    &
+                  flux_lw_net=surf_lw_net(:,:))!, cf_rad(:,:,:), reff_rad(:,:,:),   &
                   !do_cloud_simple )
 endif
 #endif
@@ -1566,7 +1570,7 @@ end subroutine coupled_ocean_close
 ! lon/lat arrays so the external Python coupler only talks to rank 0.
 !---------------------------------------------------------------------------
 subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
-        precip_out, net_sw_out, sw_down_out, lw_down_out, t_surf_out, temp_2m_out, &
+        precip_out, net_sw_out, sw_down_out, lw_down_out, lw_net_out, t_surf_out, temp_2m_out, &
         q_2m_out, u_10m_out, v_10m_out, land_frac_out, nx, ny)
     integer, intent(in) :: nx, ny
     real, intent(out) :: flux_t_out(nx, ny)    ! Sensible heat flux [W/m2], upward+
@@ -1577,6 +1581,7 @@ subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
     real, intent(out) :: net_sw_out(nx, ny)    ! Net surface SW down [W/m2]
     real, intent(out) :: sw_down_out(nx, ny)   ! Downwelling SW [W/m2]
     real, intent(out) :: lw_down_out(nx, ny)   ! Downwelling LW [W/m2]
+    real, intent(out) :: lw_net_out(nx, ny)    ! Net LW at surface, downward+ [W/m2]
     real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
     real, intent(out) :: temp_2m_out(nx, ny)   ! 2m air temperature [K]
     real, intent(out) :: q_2m_out(nx, ny)      ! 2m specific humidity [kg/kg]
@@ -1602,6 +1607,7 @@ subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
     call mpp_global_field(grid_domain, net_surf_sw_down, net_sw_out)
     call mpp_global_field(grid_domain, surf_sw_down, sw_down_out)
     call mpp_global_field(grid_domain, surf_lw_down, lw_down_out)
+    call mpp_global_field(grid_domain, surf_lw_net, lw_net_out)
     call mpp_global_field(grid_domain, t_surf, t_surf_out)
     call mpp_global_field(grid_domain, temp_2m, temp_2m_out)
     call mpp_global_field(grid_domain, q_2m, q_2m_out)

@@ -441,11 +441,11 @@ contains
    integer :: lon_max, lat_max, root
    real, allocatable :: sst(:,:), sic(:,:), ice_alb(:,:)
    real, allocatable :: flux_t(:,:), flux_q(:,:), flux_u(:,:), flux_v(:,:)
-   real, allocatable :: precip(:,:), net_sw(:,:), sw_down(:,:), lw_down(:,:), t_surf(:,:)
+   real, allocatable :: precip(:,:), net_sw(:,:), sw_down(:,:), lw_down(:,:), lw_net(:,:), t_surf(:,:)
    real, allocatable :: temp_2m(:,:), q_2m(:,:), u_10m(:,:), v_10m(:,:)
    real, allocatable :: land_frac(:,:)
    real, allocatable :: acc_flux_t(:,:), acc_flux_q(:,:), acc_flux_u(:,:), acc_flux_v(:,:)
-   real, allocatable :: acc_precip(:,:), acc_net_sw(:,:), acc_sw_down(:,:), acc_lw_down(:,:), acc_t_surf(:,:)
+   real, allocatable :: acc_precip(:,:), acc_net_sw(:,:), acc_sw_down(:,:), acc_lw_down(:,:), acc_lw_net(:,:), acc_t_surf(:,:)
    real, allocatable :: acc_temp_2m(:,:), acc_q_2m(:,:), acc_u_10m(:,:), acc_v_10m(:,:)
    real, allocatable :: acc_land_frac(:,:)
 
@@ -455,11 +455,11 @@ contains
 
    allocate(sst(lon_max, lat_max), sic(lon_max, lat_max), ice_alb(lon_max, lat_max))
    allocate(flux_t(lon_max, lat_max), flux_q(lon_max, lat_max), flux_u(lon_max, lat_max), flux_v(lon_max, lat_max))
-   allocate(precip(lon_max, lat_max), net_sw(lon_max, lat_max), sw_down(lon_max, lat_max), lw_down(lon_max, lat_max), t_surf(lon_max, lat_max))
+   allocate(precip(lon_max, lat_max), net_sw(lon_max, lat_max), sw_down(lon_max, lat_max), lw_down(lon_max, lat_max), lw_net(lon_max, lat_max), t_surf(lon_max, lat_max))
    allocate(temp_2m(lon_max, lat_max), q_2m(lon_max, lat_max), u_10m(lon_max, lat_max), v_10m(lon_max, lat_max))
    allocate(land_frac(lon_max, lat_max))
    allocate(acc_flux_t(lon_max, lat_max), acc_flux_q(lon_max, lat_max), acc_flux_u(lon_max, lat_max), acc_flux_v(lon_max, lat_max))
-   allocate(acc_precip(lon_max, lat_max), acc_net_sw(lon_max, lat_max), acc_sw_down(lon_max, lat_max), acc_lw_down(lon_max, lat_max), acc_t_surf(lon_max, lat_max))
+   allocate(acc_precip(lon_max, lat_max), acc_net_sw(lon_max, lat_max), acc_sw_down(lon_max, lat_max), acc_lw_down(lon_max, lat_max), acc_lw_net(lon_max, lat_max), acc_t_surf(lon_max, lat_max))
    allocate(acc_temp_2m(lon_max, lat_max), acc_q_2m(lon_max, lat_max), acc_u_10m(lon_max, lat_max), acc_v_10m(lon_max, lat_max))
    allocate(acc_land_frac(lon_max, lat_max))
 
@@ -496,14 +496,14 @@ contains
       call set_coupled_surface(sst, sic, ice_alb, lon_max, lat_max)
 
       acc_flux_t = 0.0; acc_flux_q = 0.0; acc_flux_u = 0.0; acc_flux_v = 0.0
-      acc_precip = 0.0; acc_net_sw = 0.0; acc_sw_down = 0.0; acc_lw_down = 0.0; acc_t_surf = 0.0
+      acc_precip = 0.0; acc_net_sw = 0.0; acc_sw_down = 0.0; acc_lw_down = 0.0; acc_lw_net = 0.0; acc_t_surf = 0.0
       acc_temp_2m = 0.0; acc_q_2m = 0.0; acc_u_10m = 0.0; acc_v_10m = 0.0
       acc_land_frac = 0.0
 
       do step = 1, nsteps
          call atmosphere(Time)
          Time = Time + Time_step_atmos
-         call get_coupled_fluxes(flux_t, flux_q, flux_u, flux_v, precip, net_sw, sw_down, lw_down, t_surf, &
+         call get_coupled_fluxes(flux_t, flux_q, flux_u, flux_v, precip, net_sw, sw_down, lw_down, lw_net, t_surf, &
                                  temp_2m, q_2m, u_10m, v_10m, land_frac, lon_max, lat_max)
          acc_flux_t = acc_flux_t + flux_t
          acc_flux_q = acc_flux_q + flux_q
@@ -513,6 +513,7 @@ contains
          acc_net_sw = acc_net_sw + net_sw
          acc_sw_down = acc_sw_down + sw_down
          acc_lw_down = acc_lw_down + lw_down
+         acc_lw_net = acc_lw_net + lw_net
          acc_t_surf = acc_t_surf + t_surf
          acc_temp_2m = acc_temp_2m + temp_2m
          acc_q_2m = acc_q_2m + q_2m
@@ -533,6 +534,7 @@ contains
       acc_net_sw = acc_net_sw / real(nsteps)
       acc_sw_down = acc_sw_down / real(nsteps)
       acc_lw_down = acc_lw_down / real(nsteps)
+      acc_lw_net = acc_lw_net / real(nsteps)
       acc_t_surf = acc_t_surf / real(nsteps)
       acc_temp_2m = acc_temp_2m / real(nsteps)
       acc_q_2m = acc_q_2m / real(nsteps)
@@ -549,6 +551,7 @@ contains
          write(unit_out) acc_net_sw
          write(unit_out) acc_sw_down
          write(unit_out) acc_lw_down
+         write(unit_out) acc_lw_net
          write(unit_out) acc_t_surf
          write(unit_out) acc_temp_2m
          write(unit_out) acc_q_2m
