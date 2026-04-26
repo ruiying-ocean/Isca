@@ -272,6 +272,7 @@ real, allocatable, dimension(:,:,:) :: &
 
 real, allocatable, dimension(:,:) :: &
      net_surf_sw_down,  &   ! net sw flux at surface
+     surf_sw_down,      &   ! downward sw flux at surface (RRTM only)
      surf_lw_down           ! downward lw flux at surface
 
 integer ::           &
@@ -533,7 +534,9 @@ allocate(non_diff_dt_tg  (is:ie, js:je, num_levels))
 allocate(non_diff_dt_qg  (is:ie, js:je, num_levels))
 
 allocate(net_surf_sw_down        (is:ie, js:je))
+allocate(surf_sw_down            (is:ie, js:je))
 allocate(surf_lw_down            (is:ie, js:je))
+surf_sw_down = 0.0   ! filled by RRTM in coupled runs; safe default for non-RRTM paths
 allocate(conv_dt_tg  (is:ie, js:je, num_levels))
 allocate(conv_dt_qg  (is:ie, js:je, num_levels))
 allocate(cond_dt_tg  (is:ie, js:je, num_levels))
@@ -1180,7 +1183,8 @@ if(do_rrtm_radiation) then
    call interp_temp(z_full(:,:,:,current),z_half(:,:,:,current),tg_interp, Time)
    call run_rrtmg(is,js,Time,rad_lat(:,:),rad_lon(:,:),p_full(:,:,:,current),p_half(:,:,:,current),  &
                   albedo,grid_tracers(:,:,:,previous,nsphum),tg_interp,t_surf(:,:),dt_tg(:,:,:),     &
-                  coszen,net_surf_sw_down(:,:),surf_lw_down(:,:))!, cf_rad(:,:,:), reff_rad(:,:,:),   &
+                  coszen,net_surf_sw_down(:,:),surf_lw_down(:,:),                                   &
+                  flux_sw_down=surf_sw_down(:,:))!, cf_rad(:,:,:), reff_rad(:,:,:),   &
                   !do_cloud_simple )
 endif
 #endif
@@ -1509,21 +1513,23 @@ END SUBROUTINE rh_calc
 ! albedo (0.70). Land temperature is not overwritten here; mixed_layer
 ! evolves land while prescribing ocean from the external SST.
 !---------------------------------------------------------------------------
-subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
+subroutine set_coupled_surface(sst_in, sic_in, ice_alb_in, nx, ny)
     integer, intent(in) :: nx, ny
     real, intent(in) :: sst_in(nx, ny)
     real, intent(in) :: sic_in(nx, ny)
+    real, intent(in) :: ice_alb_in(nx, ny)
     integer :: i, j
-    real :: sic_cell
+    real :: sic_cell, alb_cell
 
     call mixed_layer_set_external_surface(sst_in(is:ie, js:je), sic_in(is:ie, js:je))
 
     do j = js, je
       do i = is, ie
         sic_cell = max(0.0, min(1.0, sic_in(i, j)))
+        alb_cell = max(0.0, min(1.0, ice_alb_in(i, j)))
         if(.not.land(i, j)) then
           t_surf(i, j) = sst_in(i, j)
-          albedo(i, j) = coupled_albedo_base(i, j) * (1.0 - sic_cell) + 0.70 * sic_cell
+          albedo(i, j) = coupled_albedo_base(i, j) * (1.0 - sic_cell) + alb_cell * sic_cell
         endif
       enddo
     enddo
@@ -1560,7 +1566,7 @@ end subroutine coupled_ocean_close
 ! lon/lat arrays so the external Python coupler only talks to rank 0.
 !---------------------------------------------------------------------------
 subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
-        precip_out, net_sw_out, lw_down_out, t_surf_out, temp_2m_out, &
+        precip_out, net_sw_out, sw_down_out, lw_down_out, t_surf_out, temp_2m_out, &
         q_2m_out, u_10m_out, v_10m_out, land_frac_out, nx, ny)
     integer, intent(in) :: nx, ny
     real, intent(out) :: flux_t_out(nx, ny)    ! Sensible heat flux [W/m2], upward+
@@ -1569,6 +1575,7 @@ subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
     real, intent(out) :: flux_v_out(nx, ny)    ! Meridional stress [Pa]
     real, intent(out) :: precip_out(nx, ny)    ! Total precipitation [kg/m2/s]
     real, intent(out) :: net_sw_out(nx, ny)    ! Net surface SW down [W/m2]
+    real, intent(out) :: sw_down_out(nx, ny)   ! Downwelling SW [W/m2]
     real, intent(out) :: lw_down_out(nx, ny)   ! Downwelling LW [W/m2]
     real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
     real, intent(out) :: temp_2m_out(nx, ny)   ! 2m air temperature [K]
@@ -1593,6 +1600,7 @@ subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
     call mpp_global_field(grid_domain, flux_v, flux_v_out)
     call mpp_global_field(grid_domain, precip, precip_out)
     call mpp_global_field(grid_domain, net_surf_sw_down, net_sw_out)
+    call mpp_global_field(grid_domain, surf_sw_down, sw_down_out)
     call mpp_global_field(grid_domain, surf_lw_down, lw_down_out)
     call mpp_global_field(grid_domain, t_surf, t_surf_out)
     call mpp_global_field(grid_domain, temp_2m, temp_2m_out)

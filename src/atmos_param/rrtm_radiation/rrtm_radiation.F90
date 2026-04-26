@@ -83,7 +83,7 @@
         !  cloud & aerosol optical depths, cloud and aerosol specific parameters. Set to zero
         real(kind=rb),allocatable,dimension(:,:,:) :: taucld,tauaer, sw_zro, zro_sw
         ! heating rates and fluxes, zenith angle when in-between radiation time steps
-        real(kind=rb),allocatable,dimension(:,:)   :: sw_flux,lw_flux,zencos, olr, toa_sw! surface and TOA fluxes, cos(zenith angle) 
+        real(kind=rb),allocatable,dimension(:,:)   :: sw_flux,sw_flux_down,lw_flux,zencos, olr, toa_sw! surface and TOA fluxes, cos(zenith angle)
                                                                             ! dimension (lon x lat)
         real(kind=rb),allocatable,dimension(:,:,:) :: tdt_rad               ! heating rate [K/s]
                                                                             ! dimension (lon x lat x pfull)
@@ -199,7 +199,7 @@
 !
 !-------------------- diagnostics fields -------------------------------
 
-        integer :: id_tdt_rad, id_tdt_sw, id_tdt_lw, id_coszen, id_flux_sw, id_flux_lw, id_olr, id_toa_sw, id_albedo,id_ozone, id_co2, id_fracday, id_half_level_temp, id_full_level_temp
+        integer :: id_tdt_rad, id_tdt_sw, id_tdt_lw, id_coszen, id_flux_sw, id_flux_sw_down, id_flux_lw, id_olr, id_toa_sw, id_albedo,id_ozone, id_co2, id_fracday, id_half_level_temp, id_full_level_temp
         character(len=14), parameter :: mod_name_rad = 'rrtm_radiation' !s changed parameter name from mod_name to mod_name_rad as compiler objected, presumably because mod_name also defined in idealized_moist_physics.F90 after use rrtm_vars is included. 
         real :: missing_value = -999.
 
@@ -303,6 +303,10 @@
           id_flux_sw = &
                register_diag_field ( mod_name_rad, 'flux_sw', axes(1:2), Time, &
                  'Net SW surface flux', &
+                 'W/m2', missing_value=missing_value               )
+          id_flux_sw_down = &
+               register_diag_field ( mod_name_rad, 'flux_sw_down', axes(1:2), Time, &
+                 'Downward SW surface flux', &
                  'W/m2', missing_value=missing_value               )
           id_flux_lw = &
                register_diag_field ( mod_name_rad, 'flux_lw', axes(1:2), Time, &
@@ -482,6 +486,8 @@
 
           if(store_intermediate_rad .or. id_flux_sw > 0) &
                allocate(sw_flux(size(lonb,1)-1,size(latb,2)-1))
+          if(store_intermediate_rad .or. id_flux_sw_down > 0) &
+               allocate(sw_flux_down(size(lonb,1)-1,size(latb,2)-1))
           if(store_intermediate_rad .or. id_flux_lw > 0) &
                allocate(lw_flux(size(lonb,1)-1,size(latb,2)-1))
 	      if(id_olr > 0) &
@@ -556,7 +562,7 @@
         end subroutine interp_temp
 !*****************************************************************************************
 !*****************************************************************************************
-        subroutine run_rrtmg(is,js,Time,lat,lon,p_full,p_half,albedo,q,t,t_surf_rad,tdt,coszen,flux_sw,flux_lw)
+        subroutine run_rrtmg(is,js,Time,lat,lon,p_full,p_half,albedo,q,t,t_surf_rad,tdt,coszen,flux_sw,flux_lw,flux_sw_down)
 !
 ! Driver for RRTMG radiation scheme.
 ! Prepares all inputs, calls SW and LW radiation schemes, 
@@ -606,6 +612,8 @@
           real(kind=rb),dimension(:,:),intent(out),optional :: flux_sw,flux_lw ! surface fluxes [W/m2]
                                                                                ! dimension (lat x lon)
                                                                                ! need to have both or none!
+          real(kind=rb),dimension(:,:),intent(out),optional :: flux_sw_down    ! downward SW at surface [W/m2]
+                                                                               ! dimension (lat x lon)
 !---------------------------------------------------------------------------------------------------------------
 ! Local variables
           integer k,j,i,ij,j1,i1,ij1,kend,dyofyr,seconds,days
@@ -618,7 +626,7 @@
           real(kind=rb),dimension(ncols_rrt,nlay_rrt+1) :: uflx, dflx, uflxc, dflxc&
                ,swuflx, swdflx, swuflxc, swdflxc
           real(kind=rb),dimension(size(q,1)/lonstep,size(q,2),size(q,3)  ) :: swijk,lwijk
-          real(kind=rb),dimension(size(q,1)/lonstep,size(q,2)) :: swflxijk,lwflxijk
+          real(kind=rb),dimension(size(q,1)/lonstep,size(q,2)) :: swflxijk,swdflxijk,lwflxijk
           real(kind=rb),dimension(ncols_rrt,nlay_rrt+1):: phalf,thalf
           real(kind=rb),dimension(ncols_rrt)   :: tsrf,cosz_rr,albedo_rr
           real(kind=rb) :: dlon,dlat,dj,di 
@@ -655,10 +663,12 @@
                 tdt_rrtm = tdt_rad
                 flux_sw = sw_flux
                 flux_lw = lw_flux
+                if(present(flux_sw_down) .and. allocated(sw_flux_down)) flux_sw_down = sw_flux_down
              else
                 tdt_rrtm = 0.
                 flux_sw  = 0.
                 flux_lw  = 0.
+                if(present(flux_sw_down)) flux_sw_down = 0.
              endif
              tdt = tdt + tdt_rrtm
              call write_diag_rrtm(Time,is,js)
@@ -739,6 +749,10 @@
              tdt_rad = tdt_rrtm
              sw_flux = flux_sw
              lw_flux = flux_lw
+             ! No down-only SW file format defined; mirror net SW so the
+             ! caller still gets a valid array. Inversion via albedo is
+             ! exact when read-from-file replaces the radiation step.
+             if(present(flux_sw_down)) flux_sw_down = flux_sw
              call write_diag_rrtm(Time_loc,is,js)
              return !we're done here
           endif
@@ -989,6 +1003,9 @@
              !only surface fluxes are needed
              swflxijk = reshape(swdflx(:,1)-swuflx(:,1),(/ si/lonstep,sj /)) ! net down SW flux
              lwflxijk = reshape(  dflx(:,1)            ,(/ si/lonstep,sj /)) ! down LW flux
+             if(present(flux_sw_down)) then
+                swdflxijk = reshape(swdflx(:,1),(/ si/lonstep,sj /))         ! down-only SW flux
+             endif
              dlon=1./lonstep
              do i=1,size(swijk,1)
                 i1 = i+1
@@ -1000,9 +1017,13 @@
                    if(do_zm_rad) then
                       flux_sw(ij1,:) = sum(swflxijk,1)/max(1,size(swflxijk,1))
                       flux_lw(ij1,:) = sum(lwflxijk,1)/max(1,size(lwflxijk,1))
+                      if(present(flux_sw_down)) &
+                         flux_sw_down(ij1,:) = sum(swdflxijk,1)/max(1,size(swdflxijk,1))
                    else
                       flux_sw(ij1,:) = di*swflxijk(i1,:) + (1.-di)*swflxijk(i ,:)
                       flux_lw(ij1,:) = di*lwflxijk(i1,:) + (1.-di)*lwflxijk(i ,:)
+                      if(present(flux_sw_down)) &
+                         flux_sw_down(ij1,:) = di*swdflxijk(i1,:) + (1.-di)*swdflxijk(i ,:)
                    endif
                 enddo
              enddo
@@ -1012,14 +1033,16 @@
              if ( do_read_lw_flux )then
                 call interpolator( flw_interp, Time_loc, flux_lw, trim(lw_flux_file))
              endif
-                
+
              ! store between radiation steps
              if(store_intermediate_rad)then
                 sw_flux = flux_sw
                 lw_flux = flux_lw
+                if(present(flux_sw_down) .and. allocated(sw_flux_down)) sw_flux_down = flux_sw_down
              else
                 if(id_flux_sw > 0)sw_flux = flux_sw
                 if(id_flux_lw > 0)lw_flux = flux_lw
+                if(present(flux_sw_down) .and. id_flux_sw_down > 0) sw_flux_down = flux_sw_down
              endif
              if(id_coszen  > 0)zencos  = coszen
           endif
@@ -1074,9 +1097,9 @@
 ! write out diagnostics fields
 !
 ! Modules
-          use rrtm_vars,only:         sw_flux,lw_flux,zencos,tdt_rad,tdt_sw_rad,tdt_lw_rad,t_half,&
+          use rrtm_vars,only:         sw_flux,sw_flux_down,lw_flux,zencos,tdt_rad,tdt_sw_rad,tdt_lw_rad,t_half,&
                                       &id_tdt_rad,id_tdt_sw,id_tdt_lw,id_coszen,&
-                                      &id_flux_sw,id_flux_lw,id_albedo,id_ozone, id_co2, id_fracday,&
+                                      &id_flux_sw,id_flux_sw_down,id_flux_lw,id_albedo,id_ozone, id_co2, id_fracday,&
 									  &id_olr,id_toa_sw,olr,toa_sw, id_half_level_temp, id_full_level_temp
           use diag_manager_mod, only: register_diag_field, send_data
           use time_manager_mod,only:  time_type
@@ -1115,6 +1138,10 @@
           if ( id_flux_sw > 0 ) then
 !             used = send_data ( id_flux_sw, sw_flux, Time, is, js )
              used = send_data ( id_flux_sw, sw_flux, Time)
+          endif
+!------- Downward SW surface flux              ------------
+          if ( id_flux_sw_down > 0 .and. allocated(sw_flux_down)) then
+             used = send_data ( id_flux_sw_down, sw_flux_down, Time)
           endif
 !------- Net LW surface flux                   ------------
           if ( id_flux_lw > 0 ) then
