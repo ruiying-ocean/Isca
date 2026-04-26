@@ -23,6 +23,11 @@ netcdf_flags=`nf-config --fflags --flibs`
 ulimit -s unlimited # Set stack size to unlimited
 export MALLOC_CHECK_=0
 
+# Parallel make: respect ${MAKE_JOBS} if the user set it, otherwise use
+# all logical cores. Linux exposes them via getconf; macOS via sysctl.
+make_jobs=${MAKE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
+echo "Using make -j${make_jobs}"
+
 # 3. compile the mppncombine tool if it hasn't yet been done.
 if [ ! -e "{{ execdir }}/mppnccombine.x" ]; then
   echo "Compiling postprocessing tools"
@@ -64,7 +69,7 @@ $mkmf  -a $sourcedir -t $template -p $executable -c "$cppDefs" $pathnames $sourc
 
 fi
 
-make
+make -j${make_jobs}
 
 # $mkmf $make_flags -a $source_dir  -p fms_moist.x -t   $template \
 #     -c "-Duse_libMPI -Duse_netCDF -Duse_LARGEFILE -DINTERNAL_FILE_NML -DOVERLOAD_C8" $pathnames $sourcedir/shared/mpp/include $sourcedir/shared/constants $sourcedir/include
@@ -76,7 +81,7 @@ if [ $? != 0 ]; then
 fi
 
 # --- execute make ---
-make $executable
+make -j${make_jobs} $executable
 if [ $? != 0 ]; then
     echo "ERROR: make failed for $executable"
     exit 1
