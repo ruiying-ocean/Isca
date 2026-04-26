@@ -1,0 +1,39 @@
+echo Loading femic gfortran-Homebrew environment for macOS
+
+# Detect Homebrew prefix (works for stock Apple-Silicon /opt/homebrew, the
+# /usr/local Intel default, and custom installs). Lets the mkmf template
+# below pick up the right include + lib paths without per-machine edits.
+if [ -z "${HOMEBREW_PREFIX:-}" ]; then
+    if command -v brew >/dev/null 2>&1; then
+        HOMEBREW_PREFIX="$(brew --prefix)"
+    else
+        HOMEBREW_PREFIX="/opt/homebrew"
+    fi
+fi
+export HOMEBREW_PREFIX
+
+# mkmf template selected via GFDL_MKMF_TEMPLATE:
+#   .../src/extra/python/isca/templates/mkmf.template.${GFDL_MKMF_TEMPLATE}
+export GFDL_MKMF_TEMPLATE=gfort-macos
+
+export F90=mpifort
+# Apple clang 21+ promotes "call to undeclared function" (C99) to an error
+# by default. FMS's pre-C99 mosaic + postprocessing tools (e.g.
+# create_xgrid.c, mppnccombine.c) rely on the older implicit-int rule;
+# downgrade the error back to a warning so they still build. Baked into
+# CC so both the mkmf-driven main FMS compile and compile_mppn.sh (which
+# invokes `$CC -O -c ...` directly without honoring CFLAGS) pick it up.
+export CC="mpicc -Wno-error=implicit-function-declaration"
+
+# Open MPI wrappers from a conda-forge env on macOS are configured to invoke
+# `arm64-apple-darwin20.0.0-{clang,gfortran}` aliases that aren't installed
+# in stock envs. Redirect to system clang + Homebrew gfortran.
+export OMPI_CC=clang
+export OMPI_FC=gfortran
+export OMPI_CXX=clang++
+
+# Stock mkmf.template.gfort hardcodes /usr/local/include; the gfort-macos
+# template uses ${HOMEBREW_PREFIX} but make-time exports also help when the
+# template's CPPFLAGS gets overridden by the build harness.
+export CPPFLAGS="-I${HOMEBREW_PREFIX}/include ${CPPFLAGS:-}"
+export LDFLAGS="-L${HOMEBREW_PREFIX}/lib ${LDFLAGS:-}"

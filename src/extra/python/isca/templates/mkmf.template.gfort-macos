@@ -1,0 +1,35 @@
+# gfortran-on-macOS template (Homebrew). Adds the gfortran 10+ flags
+# `-fallow-argument-mismatch -fallow-invalid-boz` so RRTM and the older
+# Fortran sources still link, downgrades the Apple-clang-21+
+# implicit-function-declaration error back to a warning so FMS's pre-C99
+# K&R-style mosaic helpers still build, and picks up Homebrew's NetCDF +
+# headers under ${HOMEBREW_PREFIX} (set by the femic-macos env file).
+
+CPPFLAGS = -I$(HOMEBREW_PREFIX)/include
+NETCDF_LIBS = `nf-config --fflags --flibs`
+
+# FFLAGS:
+#  -cpp:                     run the Fortran preprocessor
+#  -ffree-line-length-none -fno-range-check : tolerate long / odd source
+#  -fcray-pointer:           Cray pointers don't alias other variables
+#  -fdefault-real-8 / -fdefault-double-8 : 8-byte reals/doubles
+#  -fallow-argument-mismatch -fallow-invalid-boz : tolerate the rank/BOZ
+#                            issues RRTM hits with gfortran 10+.
+#  -O2:                      level-2 optimisation.
+FFLAGS = $(CPPFLAGS) $(NETCDF_LIBS) -cpp -fcray-pointer \
+          -O2 -ffree-line-length-none -fno-range-check \
+          -fdefault-real-8 -fdefault-double-8 \
+          -fallow-argument-mismatch -fallow-invalid-boz
+
+FC = $(F90)
+LD = $(F90) $(NETCDF_LIBS)
+
+LDFLAGS = -L$(HOMEBREW_PREFIX)/lib -lnetcdff -lnetcdf -lmpi
+
+# CFLAGS:
+#  -D__IFC: legacy Intel-Fortran-compatibility define expected by FMS shared.
+#  -Wno-error=implicit-function-declaration: Apple clang 21+ promotes the
+#    C99 "call to undeclared function" diagnostic to an error by default;
+#    FMS's mosaic helpers (e.g. create_xgrid.c calling isHeadNode) rely on
+#    the older C89 implicit-int rule, so we keep it as a warning.
+CFLAGS = -D__IFC -Wno-error=implicit-function-declaration
