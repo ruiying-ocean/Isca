@@ -24,7 +24,8 @@ use        cloud_simple_mod, only: cloud_simple_init, cloud_simple_end, cloud_si
 
 use       cloud_spookie_mod, only: cloud_spookie_init, cloud_spookie
 
-use         mixed_layer_mod, only: mixed_layer_init, mixed_layer, mixed_layer_end, albedo_calc
+use         mixed_layer_mod, only: mixed_layer_init, mixed_layer, mixed_layer_end, albedo_calc, &
+                                   mixed_layer_set_external_surface
 
 use         lscale_cond_mod, only: lscale_cond_init, lscale_cond, lscale_cond_end
 
@@ -1333,12 +1334,29 @@ if(turb) then
                             dedq_atm(:,:),                                 &
                               albedo(:,:))
    else if(mixed_layer_bc .and. coupled_ocean) then
-      ! FEMIC owns the SST. Skip mixed_layer's energy-balance step but
-      ! still close the implicit surface flux into Tri_surf — without
-      ! this the surface sensible/evap flux from surface_flux never
-      ! reaches the lowest atmospheric layer (atmosphere stays dry, no
-      ! precip). Equivalent to mixed_layer's closure with delta_t_surf=0.
-      call coupled_ocean_close
+      ! FEMIC owns ocean / sea-ice SST, but land still needs the
+      ! mixed_layer heat-capacity update. mixed_layer_set_external_surface
+      ! seeds sst_new + ice_concentration from the FIFO exchange so this
+      ! call prescribes ocean cells while evolving land cells.
+      call mixed_layer(                                                       &
+                              Time, Time+Time_step,                        &
+                              js,                                          &
+                              je,                                          &
+                              t_surf(:,:),                                 &
+                              flux_t(:,:),                                 &
+                              flux_q(:,:),                                 &
+                              flux_r(:,:),                                 &
+                                  dt_real,                                 &
+                    net_surf_sw_down(:,:),                                 &
+                        surf_lw_down(:,:),                                 &
+                            Tri_surf,                                      &
+                           dhdt_surf(:,:),                                 &
+                           dedt_surf(:,:),                                 &
+                           dedq_surf(:,:),                                 &
+                           drdt_surf(:,:),                                 &
+                            dhdt_atm(:,:),                                 &
+                            dedq_atm(:,:),                                 &
+                              albedo(:,:))
    endif
 
    call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
@@ -1485,11 +1503,11 @@ END SUBROUTINE rh_calc
 !=================================================================================================================================
 
 !---------------------------------------------------------------------------
-! Set surface temperature and sea-ice concentration from FEMIC. SST is an
-! effective surface temperature in K on the global Isca grid; SIC blends
-! mixed_layer_init's base albedo with a fixed sea-ice albedo (0.70). When
-! coupled_ocean = .true. mixed_layer is bypassed, so albedo set here is
-! not later overwritten by mixed_layer's albedo_calc.
+! Set ocean / sea-ice surface temperature and sea-ice concentration from
+! FEMIC. SST is an effective surface temperature in K on the global Isca
+! grid; SIC blends mixed_layer_init's base albedo with a fixed sea-ice
+! albedo (0.70). Land temperature is not overwritten here; mixed_layer
+! evolves land while prescribing ocean from the external SST.
 !---------------------------------------------------------------------------
 subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
     integer, intent(in) :: nx, ny
@@ -1498,11 +1516,15 @@ subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
     integer :: i, j
     real :: sic_cell
 
+    call mixed_layer_set_external_surface(sst_in(is:ie, js:je), sic_in(is:ie, js:je))
+
     do j = js, je
       do i = is, ie
         sic_cell = max(0.0, min(1.0, sic_in(i, j)))
-        t_surf(i, j) = sst_in(i, j)
-        albedo(i, j) = coupled_albedo_base(i, j) * (1.0 - sic_cell) + 0.70 * sic_cell
+        if(.not.land(i, j)) then
+          t_surf(i, j) = sst_in(i, j)
+          albedo(i, j) = coupled_albedo_base(i, j) * (1.0 - sic_cell) + 0.70 * sic_cell
+        endif
       enddo
     enddo
 

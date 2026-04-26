@@ -77,7 +77,8 @@ character(len=128), parameter :: mod_name='mixed_layer'
 
 !=================================================================================================================================
 
-public :: mixed_layer_init, mixed_layer, mixed_layer_end, albedo_calc
+public :: mixed_layer_init, mixed_layer, mixed_layer_end, albedo_calc, &
+          mixed_layer_set_external_surface
 
 !=================================================================================================================================
 
@@ -131,6 +132,7 @@ real    :: ice_albedo_value = 0.7
 real    :: ice_concentration_threshold = 0.5
 logical :: update_albedo_from_ice = .false.
 character(len=256) :: ice_albedo_method = 'step_function'
+logical :: use_external_surface = .false.
 
 logical :: add_latent_heat_flux_anom = .false.
 character(len=256) :: flux_lhe_anom_file_name  = 'INPUT/flux_lhe_anom.nc'
@@ -607,11 +609,20 @@ if(.not.module_is_initialized) then
 endif
 
 if(update_albedo_from_ice) then
-  call read_ice_conc(Time_next)
+  if(.not.use_external_surface) call read_ice_conc(Time_next)
   land_ice_mask=.false.
-  where(land_mask.or.(ice_concentration.gt.ice_concentration_threshold))
-    land_ice_mask=.true.
-  end where
+  if(use_external_surface) then
+    ! FEMIC prescribes all ocean / sea-ice surface temperatures. Only land
+    ! should use the mixed-layer heat-capacity update; ice albedo still comes
+    ! from the external SIC field through albedo_calc below.
+    where(land_mask)
+      land_ice_mask=.true.
+    end where
+  else
+    where(land_mask.or.(ice_concentration.gt.ice_concentration_threshold))
+      land_ice_mask=.true.
+    end where
+  endif
 else
   land_ice_mask=land_mask
 endif
@@ -680,7 +691,9 @@ endif
 
 if(do_sc_sst) then !mj sst read from input file
      ! read at the new time, as that is what we are stepping to
-     call interpolator( sst_interp, Time_next, sst_new, trim(sst_file) )
+     if(.not.use_external_surface) then
+        call interpolator( sst_interp, Time_next, sst_new, trim(sst_file) )
+     endif
 
      if(specify_sst_over_ocean_only) then
          where (.not.land_ice_mask) delta_t_surf = sst_new - t_surf
@@ -786,6 +799,29 @@ if(update_albedo_from_ice) then
 endif
 
 end subroutine albedo_calc
+!=================================================================================================================================
+
+subroutine mixed_layer_set_external_surface(sst_in, sic_in)
+
+real, intent(in), dimension(:,:) :: sst_in, sic_in
+
+if(.not.module_is_initialized) then
+  call error_mesg('mixed_layer','mixed_layer module is not initialized',FATAL)
+endif
+
+if(any(shape(sst_in) /= shape(sst_new))) then
+  call error_mesg('mixed_layer','external SST shape does not match mixed-layer grid',FATAL)
+endif
+
+if(any(shape(sic_in) /= shape(ice_concentration))) then
+  call error_mesg('mixed_layer','external SIC shape does not match mixed-layer grid',FATAL)
+endif
+
+sst_new = sst_in
+ice_concentration = max(0.0, min(1.0, sic_in))
+use_external_surface = .true.
+
+end subroutine mixed_layer_set_external_surface
 !=================================================================================================================================
 
 subroutine read_ice_conc(Time)
