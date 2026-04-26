@@ -96,7 +96,7 @@ character(len=10), parameter :: mod_name='atmosphere'
 
 public :: idealized_moist_phys_init , idealized_moist_phys , idealized_moist_phys_end
 ! FEMIC coupled ocean interface
-public :: set_coupled_sst, get_surface_fluxes, set_coupled_surface, get_coupled_fluxes, coupled_ocean
+public :: set_coupled_surface, get_coupled_fluxes, coupled_ocean
 
 logical :: module_is_initialized =.false.
 logical :: turb = .false.
@@ -132,7 +132,7 @@ logical :: do_damping = .false.
 
 
 logical :: mixed_layer_bc = .false.
-logical :: coupled_ocean = .false. ! FEMIC: SST from external ocean model, skip mixed_layer
+logical :: coupled_ocean = .false. ! FEMIC: SST prescribed by external ocean; bypass mixed_layer integration but still close vert_diff at the surface
 logical :: gp_surface = .false. ! Use Schneider & Liu 2009's prescription of lower-boundary heat flux
 
 logical :: do_simple = .false. ! Have added this to enable relative humidity to be calculated correctly below.
@@ -1315,7 +1315,7 @@ if(turb) then
    if(mixed_layer_bc .and. .not. coupled_ocean) then
    call mixed_layer(                                                       &
                               Time, Time+Time_step,                        &
-                              js,                                          & 
+                              js,                                          &
                               je,                                          &
                               t_surf(:,:),                                 & ! t_surf is intent(inout)
                               flux_t(:,:),                                 &
@@ -1332,6 +1332,13 @@ if(turb) then
                             dhdt_atm(:,:),                                 &
                             dedq_atm(:,:),                                 &
                               albedo(:,:))
+   else if(mixed_layer_bc .and. coupled_ocean) then
+      ! FEMIC owns the SST. Skip mixed_layer's energy-balance step but
+      ! still close the implicit surface flux into Tri_surf — without
+      ! this the surface sensible/evap flux from surface_flux never
+      ! reaches the lowest atmospheric layer (atmosphere stays dry, no
+      ! precip). Equivalent to mixed_layer's closure with delta_t_surf=0.
+      call coupled_ocean_close
    endif
 
    call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
@@ -1478,27 +1485,11 @@ END SUBROUTINE rh_calc
 !=================================================================================================================================
 
 !---------------------------------------------------------------------------
-! Set surface temperature from external ocean model (FEMIC coupling)
-! Called before each atmosphere step when coupled_ocean = .true.
-! SST must be in Kelvin on the ISCA grid.
-!---------------------------------------------------------------------------
-subroutine set_coupled_sst(sst_in, nx, ny)
-    integer, intent(in) :: nx, ny
-    real, intent(in) :: sst_in(nx, ny)
-    integer :: i, j
-
-    do j = js, je
-      do i = is, ie
-        t_surf(i, j) = sst_in(i, j)
-      enddo
-    enddo
-
-end subroutine set_coupled_sst
-
-!---------------------------------------------------------------------------
 ! Set surface temperature and sea-ice concentration from FEMIC. SST is an
-! effective surface temperature in K on the global Isca lon/lat grid.
-! SIC updates radiation albedo directly when coupled_ocean skips mixed_layer.
+! effective surface temperature in K on the global Isca grid; SIC blends
+! mixed_layer_init's base albedo with a fixed sea-ice albedo (0.70). When
+! coupled_ocean = .true. mixed_layer is bypassed, so albedo set here is
+! not later overwritten by mixed_layer's albedo_calc.
 !---------------------------------------------------------------------------
 subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
     integer, intent(in) :: nx, ny
@@ -1518,47 +1509,29 @@ subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
 end subroutine set_coupled_surface
 
 !---------------------------------------------------------------------------
-! Get surface fluxes for export to external ocean model
-! Called after each atmosphere step when coupled_ocean = .true.
-! Returns flux arrays on the ISCA grid.
+! Apply the surface flux contribution to Tri_surf assuming a prescribed
+! SST (delta_t_surf = 0). Mirrors the closure mixed_layer.F90 performs at
+! lines 637-746, with the SST integration step skipped. Without this,
+! gcm_vert_diff_up never receives the implicit surface sensible/latent
+! flux contribution and the atmosphere never sees evaporation.
 !---------------------------------------------------------------------------
-subroutine get_surface_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
-        precip_out, net_sw_out, lw_down_out, t_surf_out, q_surf_out, &
-        land_frac_out, nx, ny)
-    integer, intent(in) :: nx, ny
-    real, intent(out) :: flux_t_out(nx, ny)    ! Sensible heat flux [W/m2]
-    real, intent(out) :: flux_q_out(nx, ny)    ! Moisture flux [kg/m2/s]
-    real, intent(out) :: flux_u_out(nx, ny)    ! Zonal stress [Pa]
-    real, intent(out) :: flux_v_out(nx, ny)    ! Meridional stress [Pa]
-    real, intent(out) :: precip_out(nx, ny)    ! Total precipitation [kg/m2/s]
-    real, intent(out) :: net_sw_out(nx, ny)    ! Net surface SW down [W/m2]
-    real, intent(out) :: lw_down_out(nx, ny)   ! Downwelling LW [W/m2]
-    real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
-    real, intent(out) :: q_surf_out(nx, ny)    ! Surface humidity [kg/kg]
-    real, intent(out) :: land_frac_out(nx, ny) ! Land fraction [0-1]
-    real :: land_frac_local(is:ie, js:je)
+subroutine coupled_ocean_close
+    real, dimension(is:ie, js:je) :: gamma_t, gamma_q
+    real :: inv_cp_air
 
-    land_frac_local = 0.0
-    if (allocated(land)) then
-        where (land)
-            land_frac_local = 1.0
-        elsewhere
-            land_frac_local = 0.0
-        end where
-    endif
+    inv_cp_air = 1.0 / cp_air
 
-    call mpp_global_field(grid_domain, flux_t, flux_t_out)
-    call mpp_global_field(grid_domain, flux_q, flux_q_out)
-    call mpp_global_field(grid_domain, flux_u, flux_u_out)
-    call mpp_global_field(grid_domain, flux_v, flux_v_out)
-    call mpp_global_field(grid_domain, precip, precip_out)
-    call mpp_global_field(grid_domain, net_surf_sw_down, net_sw_out)
-    call mpp_global_field(grid_domain, surf_lw_down, lw_down_out)
-    call mpp_global_field(grid_domain, t_surf, t_surf_out)
-    call mpp_global_field(grid_domain, q_surf, q_surf_out)
-    call mpp_global_field(grid_domain, land_frac_local, land_frac_out)
+    gamma_t = 1.0 / (1.0 - Tri_surf%dtmass &
+                     * (Tri_surf%dflux_t + dhdt_atm * inv_cp_air))
+    Tri_surf%delta_t = gamma_t * (Tri_surf%delta_t &
+                                  + Tri_surf%dtmass * flux_t * inv_cp_air)
 
-end subroutine get_surface_fluxes
+    gamma_q = 1.0 / (1.0 - Tri_surf%dtmass &
+                     * (Tri_surf%dflux_tr(:,:,nsphum) + dedq_atm))
+    Tri_surf%delta_tr(:,:,nsphum) = gamma_q * (Tri_surf%delta_tr(:,:,nsphum) &
+                                               + Tri_surf%dtmass * flux_q)
+
+end subroutine coupled_ocean_close
 
 !---------------------------------------------------------------------------
 ! FEMIC flux/state export. All outputs are gathered to full global Isca
