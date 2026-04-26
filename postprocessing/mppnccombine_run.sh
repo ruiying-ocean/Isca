@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 
 # 1. Load the necessary tools into the environment
-module purge
+if command -v module >/dev/null 2>&1; then
+  module purge
+fi
 source $GFDL_BASE/src/extra/env/$GFDL_ENV
-module list
+if command -v module >/dev/null 2>&1; then
+  module list
+fi
 
 # Run with input file as input taken from BASH script
 echo ${1}
