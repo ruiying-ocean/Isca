@@ -25,9 +25,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sched.h>
 #include <errno.h>
 #include <sys/resource.h>
+
+#if defined(__linux__)
+
+#include <sched.h>
 
 #if !defined(_GNU_SOURCE) || !defined(__GLIBC__) || __GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 30)
 #include <sys/syscall.h>
@@ -69,8 +72,6 @@ int get_cpu_affinity(void)
   return (last_cpu == -1) ? first_cpu : -1;
 }
 
-int get_cpu_affinity_(void) { return get_cpu_affinity(); }	/* Fortran interface */
-
 
 /*
  * Set CPU affinity to one core.
@@ -86,4 +87,15 @@ void set_cpu_affinity( int cpu )
   }
 }
 
-void set_cpu_affinity_(int *cpu) { set_cpu_affinity(*cpu); }	/* Fortran interface */
+#else  /* non-Linux: macOS lacks sched_setaffinity / cpu_set_t / CPU_SET. The
+        * realistic_continents test case never relies on real CPU pinning,
+        * so the Fortran callers below get -1 / no-op stubs. Without these
+        * the FMS C compile fails before MOM/Isca even start. */
+
+int get_cpu_affinity(void)        { return -1; }
+void set_cpu_affinity(int cpu)    { (void)cpu; }
+
+#endif
+
+int  get_cpu_affinity_(void)      { return get_cpu_affinity(); }
+void set_cpu_affinity_(int *cpu)  { set_cpu_affinity(*cpu);    }
