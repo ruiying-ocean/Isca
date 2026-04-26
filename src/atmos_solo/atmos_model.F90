@@ -63,6 +63,9 @@ use  field_manager_mod, only: MODEL_ATMOS
 use tracer_manager_mod, only: register_tracers
 use       memutils_mod, only: print_memuse_stats
 use   constants_mod,    only: SECONDS_PER_HOUR,  SECONDS_PER_MINUTE, constants_init
+use idealized_moist_phys_mod, only: set_coupled_surface, get_coupled_fluxes
+use transforms_mod, only: get_lon_max, get_lat_max
+use mpp_mod, only: mpp_broadcast
 
 implicit none
 
@@ -107,9 +110,13 @@ character(len=128), parameter :: tag = &
       integer :: atmos_nthreads = 1
       character(len=17) :: calendar = '                 '
       integer, dimension(6) :: current_date = (/ 0, 0, 0, 0, 0, 0 /)
+      logical :: femic_coupled = .false.
+      character(len=256) :: femic_input_pipe = 'femic_to_isca.pipe'
+      character(len=256) :: femic_output_pipe = 'isca_to_femic.pipe'
 
       namelist /main_nml/ current_date, dt_atmos,  &
-                          days, hours, minutes, seconds, memuse_interval, print_memuse, atmos_nthreads, calendar, current_time
+                          days, hours, minutes, seconds, memuse_interval, print_memuse, atmos_nthreads, calendar, current_time, &
+                          femic_coupled, femic_input_pipe, femic_output_pipe
 
 !#######################################################################
  call constants_init
@@ -120,18 +127,22 @@ character(len=128), parameter :: tag = &
 
     call mpp_clock_begin (id_loop)
 
-    do na = 1, num_atmos_calls
+    if (femic_coupled) then
+       call femic_coupled_loop
+    else
+       do na = 1, num_atmos_calls
 
-       call atmosphere (Time)
+          call atmosphere (Time)
 
-       Time = Time + Time_step_atmos
+          Time = Time + Time_step_atmos
 
-       if(modulo(na,memuse_interval) == 0 .and. print_memuse) then
-         write( text,'(a,i4)' )'Main loop at timestep=',na
-         call print_memuse_stats(text)
-       endif
+          if(modulo(na,memuse_interval) == 0 .and. print_memuse) then
+            write( text,'(a,i4)' )'Main loop at timestep=',na
+            call print_memuse_stats(text)
+          endif
 
-    enddo
+       enddo
+    endif
 
     call mpp_clock_end (id_loop)
 
@@ -417,6 +428,138 @@ contains
 !-----------------------------------------------------------------------
 
    end subroutine atmos_model_end
+
+!#######################################################################
+! FEMIC persistent coupling loop
+!#######################################################################
+
+   subroutine femic_coupled_loop
+
+   integer, parameter :: CMD_STEP = 1
+   integer, parameter :: CMD_CLOSE = 2
+   integer :: unit_in, unit_out, cmd, nsteps, ios, step
+   integer :: lon_max, lat_max, root
+   real, allocatable :: sst(:,:), sic(:,:)
+   real, allocatable :: flux_t(:,:), flux_q(:,:), flux_u(:,:), flux_v(:,:)
+   real, allocatable :: precip(:,:), net_sw(:,:), lw_down(:,:), t_surf(:,:)
+   real, allocatable :: temp_2m(:,:), q_2m(:,:), u_10m(:,:), v_10m(:,:)
+   real, allocatable :: land_frac(:,:)
+   real, allocatable :: acc_flux_t(:,:), acc_flux_q(:,:), acc_flux_u(:,:), acc_flux_v(:,:)
+   real, allocatable :: acc_precip(:,:), acc_net_sw(:,:), acc_lw_down(:,:), acc_t_surf(:,:)
+   real, allocatable :: acc_temp_2m(:,:), acc_q_2m(:,:), acc_u_10m(:,:), acc_v_10m(:,:)
+   real, allocatable :: acc_land_frac(:,:)
+
+   root = mpp_root_pe()
+   call get_lon_max(lon_max)
+   call get_lat_max(lat_max)
+
+   allocate(sst(lon_max, lat_max), sic(lon_max, lat_max))
+   allocate(flux_t(lon_max, lat_max), flux_q(lon_max, lat_max), flux_u(lon_max, lat_max), flux_v(lon_max, lat_max))
+   allocate(precip(lon_max, lat_max), net_sw(lon_max, lat_max), lw_down(lon_max, lat_max), t_surf(lon_max, lat_max))
+   allocate(temp_2m(lon_max, lat_max), q_2m(lon_max, lat_max), u_10m(lon_max, lat_max), v_10m(lon_max, lat_max))
+   allocate(land_frac(lon_max, lat_max))
+   allocate(acc_flux_t(lon_max, lat_max), acc_flux_q(lon_max, lat_max), acc_flux_u(lon_max, lat_max), acc_flux_v(lon_max, lat_max))
+   allocate(acc_precip(lon_max, lat_max), acc_net_sw(lon_max, lat_max), acc_lw_down(lon_max, lat_max), acc_t_surf(lon_max, lat_max))
+   allocate(acc_temp_2m(lon_max, lat_max), acc_q_2m(lon_max, lat_max), acc_u_10m(lon_max, lat_max), acc_v_10m(lon_max, lat_max))
+   allocate(acc_land_frac(lon_max, lat_max))
+
+   if (mpp_pe() == root) then
+      open(newunit=unit_in, file=trim(femic_input_pipe), access='stream', form='unformatted', action='read', status='old')
+      open(newunit=unit_out, file=trim(femic_output_pipe), access='stream', form='unformatted', action='write', status='old')
+   endif
+
+   do
+      cmd = CMD_CLOSE
+      if (mpp_pe() == root) then
+         read(unit_in, iostat=ios) cmd
+         if (ios /= 0) cmd = CMD_CLOSE
+      endif
+      call mpp_broadcast(cmd, root)
+      if (cmd == CMD_CLOSE) exit
+
+      if (cmd /= CMD_STEP) then
+         call error_mesg('program atmos_model', 'unknown FEMIC coupling command', FATAL)
+      endif
+
+      nsteps = 0
+      if (mpp_pe() == root) then
+         read(unit_in) nsteps
+         read(unit_in) sst
+         read(unit_in) sic
+      endif
+      call mpp_broadcast(nsteps, root)
+      call mpp_broadcast(sst, size(sst), root)
+      call mpp_broadcast(sic, size(sic), root)
+
+      call set_coupled_surface(sst, sic, lon_max, lat_max)
+
+      acc_flux_t = 0.0; acc_flux_q = 0.0; acc_flux_u = 0.0; acc_flux_v = 0.0
+      acc_precip = 0.0; acc_net_sw = 0.0; acc_lw_down = 0.0; acc_t_surf = 0.0
+      acc_temp_2m = 0.0; acc_q_2m = 0.0; acc_u_10m = 0.0; acc_v_10m = 0.0
+      acc_land_frac = 0.0
+
+      do step = 1, nsteps
+         call atmosphere(Time)
+         Time = Time + Time_step_atmos
+         call get_coupled_fluxes(flux_t, flux_q, flux_u, flux_v, precip, net_sw, lw_down, t_surf, &
+                                 temp_2m, q_2m, u_10m, v_10m, land_frac, lon_max, lat_max)
+         acc_flux_t = acc_flux_t + flux_t
+         acc_flux_q = acc_flux_q + flux_q
+         acc_flux_u = acc_flux_u + flux_u
+         acc_flux_v = acc_flux_v + flux_v
+         acc_precip = acc_precip + precip
+         acc_net_sw = acc_net_sw + net_sw
+         acc_lw_down = acc_lw_down + lw_down
+         acc_t_surf = acc_t_surf + t_surf
+         acc_temp_2m = acc_temp_2m + temp_2m
+         acc_q_2m = acc_q_2m + q_2m
+         acc_u_10m = acc_u_10m + u_10m
+         acc_v_10m = acc_v_10m + v_10m
+         acc_land_frac = acc_land_frac + land_frac
+      enddo
+
+      if (nsteps <= 0) then
+         call error_mesg('program atmos_model', 'FEMIC coupling command requested non-positive nsteps', FATAL)
+      endif
+
+      acc_flux_t = acc_flux_t / real(nsteps)
+      acc_flux_q = acc_flux_q / real(nsteps)
+      acc_flux_u = acc_flux_u / real(nsteps)
+      acc_flux_v = acc_flux_v / real(nsteps)
+      acc_precip = acc_precip / real(nsteps)
+      acc_net_sw = acc_net_sw / real(nsteps)
+      acc_lw_down = acc_lw_down / real(nsteps)
+      acc_t_surf = acc_t_surf / real(nsteps)
+      acc_temp_2m = acc_temp_2m / real(nsteps)
+      acc_q_2m = acc_q_2m / real(nsteps)
+      acc_u_10m = acc_u_10m / real(nsteps)
+      acc_v_10m = acc_v_10m / real(nsteps)
+      acc_land_frac = acc_land_frac / real(nsteps)
+
+      if (mpp_pe() == root) then
+         write(unit_out) acc_flux_t
+         write(unit_out) acc_flux_q
+         write(unit_out) acc_flux_u
+         write(unit_out) acc_flux_v
+         write(unit_out) acc_precip
+         write(unit_out) acc_net_sw
+         write(unit_out) acc_lw_down
+         write(unit_out) acc_t_surf
+         write(unit_out) acc_temp_2m
+         write(unit_out) acc_q_2m
+         write(unit_out) acc_u_10m
+         write(unit_out) acc_v_10m
+         write(unit_out) acc_land_frac
+         call flush(unit_out)
+      endif
+   enddo
+
+   if (mpp_pe() == root) then
+      close(unit_in)
+      close(unit_out)
+   endif
+
+   end subroutine femic_coupled_loop
 
 !#######################################################################
 ! routines to set/get date when no calendar is set (i.e., yr=0 and mo=0)

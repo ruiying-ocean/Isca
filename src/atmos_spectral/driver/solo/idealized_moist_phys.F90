@@ -54,7 +54,7 @@ use      damping_driver_mod, only: damping_driver, damping_driver_init, damping_
 
 use    press_and_geopot_mod, only: pressure_variables
 
-use         mpp_domains_mod, only: mpp_get_global_domain ! needed for reading in land
+use         mpp_domains_mod, only: mpp_get_global_domain, mpp_global_field ! needed for reading in land / FEMIC coupling
 
 use tracer_manager_mod, only: get_number_tracers, query_method
 
@@ -95,8 +95,8 @@ character(len=10), parameter :: mod_name='atmosphere'
 !=================================================================================================================================
 
 public :: idealized_moist_phys_init , idealized_moist_phys , idealized_moist_phys_end
-! GENIE-X coupled ocean interface
-public :: set_coupled_sst, get_surface_fluxes, coupled_ocean
+! FEMIC coupled ocean interface
+public :: set_coupled_sst, get_surface_fluxes, set_coupled_surface, get_coupled_fluxes, coupled_ocean
 
 logical :: module_is_initialized =.false.
 logical :: turb = .false.
@@ -132,7 +132,7 @@ logical :: do_damping = .false.
 
 
 logical :: mixed_layer_bc = .false.
-logical :: coupled_ocean = .false. ! GENIE-X: SST from external ocean model, skip mixed_layer
+logical :: coupled_ocean = .false. ! FEMIC: SST from external ocean model, skip mixed_layer
 logical :: gp_surface = .false. ! Use Schneider & Liu 2009's prescription of lower-boundary heat flux
 
 logical :: do_simple = .false. ! Have added this to enable relative humidity to be calculated correctly below.
@@ -211,6 +211,7 @@ real, allocatable, dimension(:,:)   ::                                        &
      fracland,             &   ! fraction of land in gridbox
      rough,                &   ! roughness for vert_turb_driver
      albedo,               &   ! albedo now defined in mixed_layer_init
+     coupled_albedo_base,  &   ! base albedo before FEMIC live SIC override
      coszen,               &   ! make sure this is ready for assignment in run_rrtmg
      pbltop,               &   ! used as an input to damping_driver, outputted from vert_turb_driver
      ex_del_m,             &   ! used for 10m winds and 2m temp
@@ -557,6 +558,7 @@ allocate(t_ref (is:ie, js:je, num_levels)); t_ref = 0.0
 allocate(q_ref (is:ie, js:je, num_levels)); q_ref = 0.0
 
 allocate (albedo      (is:ie, js:je)) ! allocate for albedo, to be set in mixed_layer_init.
+allocate (coupled_albedo_base(is:ie, js:je))
 allocate(coszen       (is:ie, js:je)) ! allocate coszen to be set in run_rrtmg
 allocate(pbltop       (is:ie, js:je)) ! allocate coszen to be set in run_rrtmg
 
@@ -646,9 +648,11 @@ if(mixed_layer_bc) then
   t_surf = t_surf_init + 1.0
 
   call mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, get_axis_id(), Time, albedo, rad_lonb_2d(:,:), rad_latb_2d(:,:), land, bucket) ! t_surf is intent(inout) ! albedo distribution set here.
+  coupled_albedo_base = albedo
 
 elseif(gp_surface) then
   albedo=0.0
+  coupled_albedo_base = albedo
   call error_mesg('idealized_moist_phys','Because gp_surface=.True., setting albedo=0.0', NOTE)
 
   call error_mesg('idealized_moist_phys','Note that if grey radiation scheme != Schneider is used, model will seg-fault b/c gp_surface does not define a t_surf, which is required by most grey schemes.', NOTE)
@@ -1470,21 +1474,48 @@ subroutine rh_calc(pfull,T,qv,RH) ! subroutine copied from 2006 FMS MoistModel f
 END SUBROUTINE rh_calc
 
 !=================================================================================================================================
-! GENIE-X coupled ocean interface routines
+! FEMIC coupled ocean interface routines
 !=================================================================================================================================
 
 !---------------------------------------------------------------------------
-! Set surface temperature from external ocean model (GENIE-X coupling)
+! Set surface temperature from external ocean model (FEMIC coupling)
 ! Called before each atmosphere step when coupled_ocean = .true.
 ! SST must be in Kelvin on the ISCA grid.
 !---------------------------------------------------------------------------
 subroutine set_coupled_sst(sst_in, nx, ny)
     integer, intent(in) :: nx, ny
     real, intent(in) :: sst_in(nx, ny)
+    integer :: i, j
 
-    t_surf(1:nx, 1:ny) = sst_in(1:nx, 1:ny)
+    do j = js, je
+      do i = is, ie
+        t_surf(i, j) = sst_in(i, j)
+      enddo
+    enddo
 
 end subroutine set_coupled_sst
+
+!---------------------------------------------------------------------------
+! Set surface temperature and sea-ice concentration from FEMIC. SST is an
+! effective surface temperature in K on the global Isca lon/lat grid.
+! SIC updates radiation albedo directly when coupled_ocean skips mixed_layer.
+!---------------------------------------------------------------------------
+subroutine set_coupled_surface(sst_in, sic_in, nx, ny)
+    integer, intent(in) :: nx, ny
+    real, intent(in) :: sst_in(nx, ny)
+    real, intent(in) :: sic_in(nx, ny)
+    integer :: i, j
+    real :: sic_cell
+
+    do j = js, je
+      do i = is, ie
+        sic_cell = max(0.0, min(1.0, sic_in(i, j)))
+        t_surf(i, j) = sst_in(i, j)
+        albedo(i, j) = coupled_albedo_base(i, j) * (1.0 - sic_cell) + 0.70 * sic_cell
+      enddo
+    enddo
+
+end subroutine set_coupled_surface
 
 !---------------------------------------------------------------------------
 ! Get surface fluxes for export to external ocean model
@@ -1505,29 +1536,77 @@ subroutine get_surface_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
     real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
     real, intent(out) :: q_surf_out(nx, ny)    ! Surface humidity [kg/kg]
     real, intent(out) :: land_frac_out(nx, ny) ! Land fraction [0-1]
+    real :: land_frac_local(is:ie, js:je)
 
-    flux_t_out(1:nx, 1:ny)    = flux_t(1:nx, 1:ny)
-    flux_q_out(1:nx, 1:ny)    = flux_q(1:nx, 1:ny)
-    flux_u_out(1:nx, 1:ny)    = flux_u(1:nx, 1:ny)
-    flux_v_out(1:nx, 1:ny)    = flux_v(1:nx, 1:ny)
-    precip_out(1:nx, 1:ny)    = precip(1:nx, 1:ny)
-    net_sw_out(1:nx, 1:ny)    = net_surf_sw_down(1:nx, 1:ny)
-    lw_down_out(1:nx, 1:ny)   = surf_lw_down(1:nx, 1:ny)
-    t_surf_out(1:nx, 1:ny)    = t_surf(1:nx, 1:ny)
-    q_surf_out(1:nx, 1:ny)    = q_surf(1:nx, 1:ny)
-
-    ! Land fraction from the land mask
+    land_frac_local = 0.0
     if (allocated(land)) then
-        where (land(1:nx, 1:ny))
-            land_frac_out(1:nx, 1:ny) = 1.0
+        where (land)
+            land_frac_local = 1.0
         elsewhere
-            land_frac_out(1:nx, 1:ny) = 0.0
+            land_frac_local = 0.0
         end where
-    else
-        land_frac_out = 0.0  ! All ocean (aquaplanet)
-    end if
+    endif
+
+    call mpp_global_field(grid_domain, flux_t, flux_t_out)
+    call mpp_global_field(grid_domain, flux_q, flux_q_out)
+    call mpp_global_field(grid_domain, flux_u, flux_u_out)
+    call mpp_global_field(grid_domain, flux_v, flux_v_out)
+    call mpp_global_field(grid_domain, precip, precip_out)
+    call mpp_global_field(grid_domain, net_surf_sw_down, net_sw_out)
+    call mpp_global_field(grid_domain, surf_lw_down, lw_down_out)
+    call mpp_global_field(grid_domain, t_surf, t_surf_out)
+    call mpp_global_field(grid_domain, q_surf, q_surf_out)
+    call mpp_global_field(grid_domain, land_frac_local, land_frac_out)
 
 end subroutine get_surface_fluxes
+
+!---------------------------------------------------------------------------
+! FEMIC flux/state export. All outputs are gathered to full global Isca
+! lon/lat arrays so the external Python coupler only talks to rank 0.
+!---------------------------------------------------------------------------
+subroutine get_coupled_fluxes(flux_t_out, flux_q_out, flux_u_out, flux_v_out, &
+        precip_out, net_sw_out, lw_down_out, t_surf_out, temp_2m_out, &
+        q_2m_out, u_10m_out, v_10m_out, land_frac_out, nx, ny)
+    integer, intent(in) :: nx, ny
+    real, intent(out) :: flux_t_out(nx, ny)    ! Sensible heat flux [W/m2], upward+
+    real, intent(out) :: flux_q_out(nx, ny)    ! Evaporative water flux [kg/m2/s], upward+
+    real, intent(out) :: flux_u_out(nx, ny)    ! Zonal stress [Pa]
+    real, intent(out) :: flux_v_out(nx, ny)    ! Meridional stress [Pa]
+    real, intent(out) :: precip_out(nx, ny)    ! Total precipitation [kg/m2/s]
+    real, intent(out) :: net_sw_out(nx, ny)    ! Net surface SW down [W/m2]
+    real, intent(out) :: lw_down_out(nx, ny)   ! Downwelling LW [W/m2]
+    real, intent(out) :: t_surf_out(nx, ny)    ! Surface temperature [K]
+    real, intent(out) :: temp_2m_out(nx, ny)   ! 2m air temperature [K]
+    real, intent(out) :: q_2m_out(nx, ny)      ! 2m specific humidity [kg/kg]
+    real, intent(out) :: u_10m_out(nx, ny)     ! 10m zonal wind [m/s]
+    real, intent(out) :: v_10m_out(nx, ny)     ! 10m meridional wind [m/s]
+    real, intent(out) :: land_frac_out(nx, ny) ! Land fraction [0-1]
+    real :: land_frac_local(is:ie, js:je)
+
+    land_frac_local = 0.0
+    if (allocated(land)) then
+        where (land)
+            land_frac_local = 1.0
+        elsewhere
+            land_frac_local = 0.0
+        end where
+    endif
+
+    call mpp_global_field(grid_domain, flux_t, flux_t_out)
+    call mpp_global_field(grid_domain, flux_q, flux_q_out)
+    call mpp_global_field(grid_domain, flux_u, flux_u_out)
+    call mpp_global_field(grid_domain, flux_v, flux_v_out)
+    call mpp_global_field(grid_domain, precip, precip_out)
+    call mpp_global_field(grid_domain, net_surf_sw_down, net_sw_out)
+    call mpp_global_field(grid_domain, surf_lw_down, lw_down_out)
+    call mpp_global_field(grid_domain, t_surf, t_surf_out)
+    call mpp_global_field(grid_domain, temp_2m, temp_2m_out)
+    call mpp_global_field(grid_domain, q_2m, q_2m_out)
+    call mpp_global_field(grid_domain, u_10m, u_10m_out)
+    call mpp_global_field(grid_domain, v_10m, v_10m_out)
+    call mpp_global_field(grid_domain, land_frac_local, land_frac_out)
+
+end subroutine get_coupled_fluxes
 
 !=================================================================================================================================
 
