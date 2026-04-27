@@ -128,16 +128,29 @@ endif
 #                                        helpers rely on the C89 rule.
 # ---------------------------------------------------------------------------
 
+fc = meson.get_compiler('fortran')
+cc = meson.get_compiler('c')
+
 f90_args = cpp_defs + [
   '-cpp', '-fcray-pointer',
   '-ffree-line-length-none', '-fno-range-check',
   '-fdefault-real-8', '-fdefault-double-8',
-  '-fallow-argument-mismatch', '-fallow-invalid-boz',
 ]
-c_args = cpp_defs + [
-  '-D__IFC',
-  '-Wno-error=implicit-function-declaration',
-]
+# -fallow-argument-mismatch and -fallow-invalid-boz were added in gfortran 10
+# to relax checks that were promoted from warnings to errors. RRTM and FMS
+# code triggers both. On gfortran < 10 the checks are still warnings, so the
+# flags are unneeded — and rejected as unrecognized command-line options.
+if fc.get_id() == 'gcc' and fc.version().version_compare('>=10')
+  f90_args += ['-fallow-argument-mismatch', '-fallow-invalid-boz']
+endif
+
+c_args = cpp_defs + ['-D__IFC']
+# Apple clang 21+ promotes "call to undeclared function" (C99) to an error.
+# Linux gcc accepts -Wno-error=... silently for unknown warning groups, but
+# scoping this to clang keeps the flag list honest.
+if cc.get_id() == 'clang' or cc.get_id() == 'apple-clang'
+  c_args += ['-Wno-error=implicit-function-declaration']
+endif
 
 # ---------------------------------------------------------------------------
 # Dependencies — pkg-config based, no per-site hardcoded paths.
@@ -174,7 +187,6 @@ mppnccombine_exe = executable('mppnccombine.x',
   install:      false,
 )
 
-fc = meson.get_compiler('fortran')
 summary({
   'variant':       variant,
   'fortran':       fc.get_id() + ' ' + fc.version(),
