@@ -1,0 +1,22 @@
+option(
+  'variant',
+  type:        'combo',
+  choices:     ['isca'],
+  value:       'isca',
+  description: 'Isca codebase variant. Only the full atmos_solo build is wired ' +
+               'up for now; barotropic/shallow dycores will be added as ' +
+               'separate executable() targets in a later step.',
+)
+
+option(
+  'with_socrates',
+  type:        'boolean',
+  value:       false,
+  description: 'Compile in the Met Office Socrates radiation scheme. Off by ' +
+               'default because Socrates lives outside this repo (cloned via ' +
+               'GFDL_SOC) and not every user has access. When off, ' +
+               '-DSOC_NO_COMPILE makes idealized_moist_phys.F90 raise FATAL ' +
+               'if the namelist sets do_socrates_radiation=.true. RRTM and ' +
+               'grey radiation are always compiled in and selected by ' +
+               'namelist (do_rrtm_radiation, do_grey_radiation).',
+)
