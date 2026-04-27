@@ -242,6 +242,12 @@ class CodeBase(Logger):
     @useworkdir
     @destructive
     def compile(self, debug=False, optimisation=None):
+        # If the source tree ships a meson.build (femic's Meson migration),
+        # drive Meson instead of rendering compile.sh + mkmf. Upstream Isca
+        # clones without meson.build keep falling through to the mkmf path.
+        if os.path.exists(P(self.codedir, 'meson.build')):
+            return self._compile_meson()
+
         env = get_env_file()
         mkdir(self.builddir)
 
@@ -281,6 +287,52 @@ class CodeBase(Logger):
             self._log_line(line)
 
         self.log.info('Compilation complete.')
+
+    @useworkdir
+    @destructive
+    def _compile_meson(self):
+        """Drive Meson when meson.build is present in the source tree.
+
+        The path_names + cppDefs that mkmf rendered into compile.sh are
+        owned by external/isca/meson.build now. self.path_names and
+        self.compile_flags overrides are *not* honored on this path —
+        upstream wrappers don't use them either, but flag here in case a
+        downstream user relies on them.
+        """
+        mkdir(self.builddir)
+        meson = sh.Command('meson')
+
+        # Reconfigure if the build dir already exists; otherwise fresh setup.
+        # `meson setup --reconfigure` is a no-op on a clean dir.
+        setup_args = ['setup', self.builddir, self.codedir,
+                      '-Dvariant=' + self.name]
+        if os.path.exists(P(self.builddir, 'build.ninja')):
+            setup_args.insert(1, '--reconfigure')
+
+        self.log.info('Running meson setup')
+        for line in meson(*setup_args, _iter=True, _err_to_out=True):
+            self._log_line(line)
+
+        self.log.info('Running meson compile')
+        for line in meson('compile', '-C', self.builddir,
+                          _iter=True, _err_to_out=True):
+            self._log_line(line)
+
+        if not os.path.exists(self.executable_fullpath):
+            raise RuntimeError(
+                'meson compile reported success but %r is missing'
+                % self.executable_fullpath
+            )
+
+        # mkmf's compile.sh symlinked mppnccombine_run.sh into builddir;
+        # mirror that so postprocessing/run.sh templates still find it.
+        run_helper = P(self.builddir, 'mppnccombine_run.sh')
+        run_helper_src = P(self.codedir, 'postprocessing',
+                           'mppnccombine_run.sh')
+        if not os.path.exists(run_helper) and os.path.exists(run_helper_src):
+            os.symlink(run_helper_src, run_helper)
+
+        self.log.info('Compilation complete (Meson).')
 
 
 
